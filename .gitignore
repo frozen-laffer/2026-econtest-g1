@@ -1,0 +1,41 @@
+# 编译产物
+build/
+Objects/
+Listings/
+*.o
+*.d
+*.crf
+*.axf
+*.hex
+*.bin
+*.map
+*.lst
+*.dep
+*.uvguix.*
+*.scvd
+*.build_log.htm
+build_log.txt
+.cmsis/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+.cache/
+
+# 编辑器
+.vscode/
+.idea/
+
+# 凭据（树莓派地址/密码请用环境变量或 ~/.lsa_pi）
+.lsa_pi
+pi_cred.json
+
+# 日志与临时
+*.log
+*.tmp
+_*.out
+
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini

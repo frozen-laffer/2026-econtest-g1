@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=谐波分析装置
+Comment=周期信号谐波分析装置 触摸界面
+Exec=/home/frozen_laffer/lsa/start_touch.sh
+Path=/home/frozen_laffer/lsa
+Icon=utilities-system-monitor
+Terminal=false
+Categories=Utility;

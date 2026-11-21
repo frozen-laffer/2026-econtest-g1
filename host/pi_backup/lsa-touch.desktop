@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=LSA Touch
+Name[zh_CN]=周期信号谐波分析装置
+Comment=Harmonic analyser touch UI (autostart)
+Exec=/home/frozen-laffer/lsa/boot_start.sh
+Path=/home/frozen-laffer/lsa
+Terminal=false
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=2

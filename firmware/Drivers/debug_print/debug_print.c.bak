@@ -1,0 +1,72 @@
+/**
+  ******************************************************************************
+  * @file    debug_print.c
+  * @brief   USART1 调试输出 + 系统状态回传实现
+  ******************************************************************************
+  */
+#include "debug_print.h"
+#include "usart.h"
+#include "../AFE/afe.h"
+#include <string.h>
+#include <stdio.h>
+
+static UART_HandleTypeDef *g_debug_uart = &huart1;
+static uint32_t g_interval_ms = 50;
+static uint32_t g_last_send_tick = 0;
+static volatile uint8_t g_tx_busy = 0;
+extern int16_t adc1_buf[];
+extern int16_t adc2_buf[];
+extern int16_t adc3_buf[];
+
+void Debug_Init(void) { g_debug_uart = &huart1; }
+
+void Debug_Print(const char *str)
+{ if(g_debug_uart) HAL_UART_Transmit(g_debug_uart,(uint8_t*)str,strlen(str),HAL_MAX_DELAY); }
+
+void Debug_Println(const char *str) { Debug_Print(str); Debug_Print("\r\n"); }
+
+void Debug_PrintHex(const char *label, uint32_t val)
+{ char b[32]; snprintf(b,32,"%s%08lX",label,(unsigned long)val); Debug_Println(b); }
+
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *h)
+{ if(h->Instance==USART1) g_tx_busy=0; }
+
+static uint8_t xor8(const uint8_t *d, uint32_t n)
+{ uint8_t s=0; while(n--) s^=*d++; return s; }
+
+static uint8_t afe_pack(void)
+{
+    uint8_t s=0;
+    if(AFE_GetChannelState(1).coupling==AFE_COUPLING_AC) s|=0x80;
+    if(AFE_GetChannelState(2).coupling==AFE_COUPLING_AC) s|=0x20;
+    if(AFE_GetChannelState(3).coupling==AFE_COUPLING_AC) s|=0x08;
+    return s;
+}
+
+void SysStatus_Init(void) {
+    g_last_send_tick=HAL_GetTick(); g_tx_busy=0;
+    __HAL_UART_ENABLE_IT(&huart1, UART_IT_TC);
+    HAL_NVIC_SetPriority(USART1_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(USART1_IRQn);
+}
+
+void SysStatus_Send(void)
+{
+    uint32_t t=HAL_GetTick();
+    if((t-g_last_send_tick)<g_interval_ms||g_tx_busy) return;
+    SysStatusFrame_t f; memset(&f,0,18);
+    f.header=SYS_STATUS_HEADER;
+    f.ch1_raw=(uint16_t)(int16_t)adc1_buf[0];
+    f.ch2_raw=(uint16_t)(int16_t)adc2_buf[0];
+    f.ch3_raw=(uint16_t)(int16_t)adc3_buf[0];
+    f.afe_status=afe_pack(); f.bit_res=14; f.sample_rate=531;
+    extern TIM_HandleTypeDef htim4,htim1;
+    f.enc1_val=(uint16_t)__HAL_TIM_GET_COUNTER(&htim4);
+    f.enc2_val=(uint16_t)__HAL_TIM_GET_COUNTER(&htim1);
+    f.checksum=xor8((uint8_t*)&f+1,15); f.tail=SYS_STATUS_TAIL;
+    g_tx_busy=1; HAL_UART_Transmit_IT(&huart1,(uint8_t*)&f,18);
+    g_last_send_tick=t;
+}
+
+uint32_t SysStatus_GetInterval(void){return g_interval_ms;}
+void SysStatus_SetInterval(uint32_t ms){g_interval_ms=ms>0?ms:10;}

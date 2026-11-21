@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=谐波分析仪
+GenericName=触摸式谐波分析仪
+Comment=启动谐波分析触摸界面
+Comment[en]=Start the touch UI of the harmonic analyser
+Exec=/home/frozen-laffer/lsa/boot_start.sh
+Path=/home/frozen-laffer/lsa
+Icon=/home/frozen-laffer/lsa/lsa_touch_icon.png
+Terminal=false
+StartupNotify=false
+Categories=Utility;Science;
+Keywords=lsa;oscilloscope;fft;thd;
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=2

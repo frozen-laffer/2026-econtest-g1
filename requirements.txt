@@ -1,0 +1,10 @@
+# 树莓派上位机依赖（Ubuntu/Debian 上建议 --break-system-packages 或 venv）
+numpy>=1.24
+matplotlib>=3.6
+pillow>=9.0          # 注意：Debian 自带的 PIL 往往没有 ImageTk，会与 backend_tkagg 冲突
+pyserial>=3.5        # AFG-2225 串口
+paramiko>=3.0        # 部署/远程采集
+
+# 仅在 Windows 上直连 DG4202 时需要（树莓派走 /dev/usbtmc0，不需要这两项）
+# pyusb>=1.2
+# libusb-package

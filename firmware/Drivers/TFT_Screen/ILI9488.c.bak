@@ -1,0 +1,376 @@
+#include "ILI9488.h"
+#include "debug_print.h"
+#include <string.h>
+#include <stdio.h>
+
+static ILI9488_DMA_State dma_state = ILI9488_DMA_IDLE;
+static ILI9488_DMATxCpltCallback dma_callback = NULL;
+static volatile uint8_t dma_complete_flag = 0;
+static ILI9488_Rotation lcd_rotation = ILI9488_ROTATION_0;
+
+static void LCD_Color565To666(uint16_t color, uint8_t *rgb){
+	rgb[0] = ((color >> 11) & 0x1F) << 3;
+	rgb[1] = ((color >> 5) & 0x3F) << 2;
+	rgb[2] = (color & 0x1F) << 3;
+}
+
+static uint16_t LCD_GetWidth(void){
+    return (lcd_rotation == ILI9488_ROTATION_90 || lcd_rotation == ILI9488_ROTATION_270) ? LCD_HEIGHT : LCD_WIDTH;
+}
+
+static uint16_t LCD_GetHeight(void){
+    return (lcd_rotation == ILI9488_ROTATION_90 || lcd_rotation == ILI9488_ROTATION_270) ? LCD_WIDTH : LCD_HEIGHT;
+}
+
+/* ──────────────────────────────────────────────────────────────
+   ★★★ 高速 GPIO Bit-Bang SPI ★★★
+   ────────────────────────────────────────────────────────────── */
+
+static inline void BB_WriteByte(uint8_t data)
+{
+    if (data & 0x80) { GPIOD->BSRR = (1UL << 7); } else { GPIOD->BSRR = (1UL << (7+16)); } __DSB(); GPIOB->BSRR = (1UL << 3); __DSB(); GPIOB->BSRR = (1UL << (3+16));
+    if (data & 0x40) { GPIOD->BSRR = (1UL << 7); } else { GPIOD->BSRR = (1UL << (7+16)); } __DSB(); GPIOB->BSRR = (1UL << 3); __DSB(); GPIOB->BSRR = (1UL << (3+16));
+    if (data & 0x20) { GPIOD->BSRR = (1UL << 7); } else { GPIOD->BSRR = (1UL << (7+16)); } __DSB(); GPIOB->BSRR = (1UL << 3); __DSB(); GPIOB->BSRR = (1UL << (3+16));
+    if (data & 0x10) { GPIOD->BSRR = (1UL << 7); } else { GPIOD->BSRR = (1UL << (7+16)); } __DSB(); GPIOB->BSRR = (1UL << 3); __DSB(); GPIOB->BSRR = (1UL << (3+16));
+    if (data & 0x08) { GPIOD->BSRR = (1UL << 7); } else { GPIOD->BSRR = (1UL << (7+16)); } __DSB(); GPIOB->BSRR = (1UL << 3); __DSB(); GPIOB->BSRR = (1UL << (3+16));
+    if (data & 0x04) { GPIOD->BSRR = (1UL << 7); } else { GPIOD->BSRR = (1UL << (7+16)); } __DSB(); GPIOB->BSRR = (1UL << 3); __DSB(); GPIOB->BSRR = (1UL << (3+16));
+    if (data & 0x02) { GPIOD->BSRR = (1UL << 7); } else { GPIOD->BSRR = (1UL << (7+16)); } __DSB(); GPIOB->BSRR = (1UL << 3); __DSB(); GPIOB->BSRR = (1UL << (3+16));
+    if (data & 0x01) { GPIOD->BSRR = (1UL << 7); } else { GPIOD->BSRR = (1UL << (7+16)); } __DSB(); GPIOB->BSRR = (1UL << 3); __DSB(); GPIOB->BSRR = (1UL << (3+16));
+}
+
+/* BB_WriteBuf — 纯写数据，调用方负责 CS/DC 管理 */
+static void BB_WriteBuf(const uint8_t *data, uint32_t len)
+{
+    for (uint32_t i = 0; i < len; i++)
+        BB_WriteByte(data[i]);
+}
+
+static void SPI1_BitBang_Init(void)
+{
+    GPIOB->MODER = (GPIOB->MODER & ~0x000000C0UL) | 0x00000040UL;
+    GPIOB->OTYPER &= ~(1UL << 3);
+    GPIOB->OSPEEDR |= (3UL << 6);
+    GPIOB->PUPDR &= ~(3UL << 6);
+
+    GPIOD->MODER = (GPIOD->MODER & ~0x0000C000UL) | 0x00004000UL;
+    GPIOD->OTYPER &= ~(1UL << 7);
+    GPIOD->OSPEEDR |= (3UL << 14);
+    GPIOD->PUPDR &= ~(3UL << 14);
+
+    GPIOB->MODER = (GPIOB->MODER & ~0x00003000UL) | 0x00001000UL;
+    GPIOB->OTYPER &= ~(1UL << 6);
+    GPIOB->OSPEEDR |= (3UL << 12);
+    GPIOB->PUPDR &= ~(3UL << 12);
+    GPIOB->BSRR = (1UL << (6+16));
+
+    GPIOB->MODER = (GPIOB->MODER & ~0x00000C00UL) | 0x00000400UL;
+    GPIOB->OTYPER &= ~(1UL << 5);
+    GPIOB->OSPEEDR |= (3UL << 10);
+    GPIOB->PUPDR &= ~(3UL << 10);
+
+    GPIOD->MODER = (GPIOD->MODER & ~0x00000300UL) | 0x00000100UL;
+    GPIOD->OTYPER &= ~(1UL << 4);
+    GPIOD->OSPEEDR |= (3UL << 8);
+    GPIOD->PUPDR &= ~(3UL << 8);
+    GPIOD->BSRR = (1UL << (4+16));
+
+    __DSB();
+    GPIOB->BSRR = (1UL << (3+16));
+    GPIOD->BSRR = (1UL << (7+16));
+    __DSB();
+}
+
+#define SPI1_Reg_Transmit(d)        BB_WriteByte((uint8_t)(d))
+#define SPI1_Reg_Transmit_N(d, n)   BB_WriteBuf((const uint8_t *)(d), (uint32_t)(n))
+
+void LCD_WriteCommand(uint8_t command){
+    DC_LOW(); CS_LOW(); BB_WriteByte(command); CS_HIGH();
+}
+
+void LCD_WriteData(uint8_t data){
+    DC_HIGH(); CS_LOW(); BB_WriteByte(data); CS_HIGH();
+}
+
+void LCD_WriteData16(uint16_t data){
+    uint8_t rgb[3];
+    LCD_Color565To666(data, rgb);
+    DC_HIGH(); CS_LOW(); BB_WriteBuf(rgb, 3); CS_HIGH();
+}
+
+void LCD_WriteDataBuffer16(const uint16_t* buffer, uint32_t len){
+    if (len == 0) return;
+    DC_HIGH(); CS_LOW();
+    for (uint32_t i = 0; i < len; i++) {
+        uint8_t rgb[3]; LCD_Color565To666(buffer[i], rgb); BB_WriteBuf(rgb, 3);
+    }
+    CS_HIGH();
+}
+
+void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi){
+    if (hspi->Instance == SPI1) {
+        dma_complete_flag = 1; dma_state = ILI9488_DMA_IDLE;
+        if (dma_callback != NULL) dma_callback();
+    }
+}
+
+void LCD_WaitDMAComplete(void){
+    uint32_t start_time = HAL_GetTick();
+    while(dma_complete_flag == 0){
+        if(HAL_GetTick() - start_time > 2000){ dma_state = ILI9488_DMA_ERROR; break; }
+    }
+}
+ILI9488_DMA_State ILI9488_GetDMAState(void) { return dma_state; }
+void ILI9488_SetDMAState(ILI9488_DMA_State state) { dma_state = state; }
+void ILI9488_SetDMACallback(ILI9488_DMATxCpltCallback callback) { dma_callback = callback; }
+
+void LCD_SetRotation(ILI9488_Rotation rotation) {
+    uint8_t madctl;
+    switch (rotation) {
+        case ILI9488_ROTATION_0:   madctl = 0x48; break;
+        case ILI9488_ROTATION_90:  madctl = 0x28; break;
+        case ILI9488_ROTATION_180: madctl = 0x88; break;
+        case ILI9488_ROTATION_270: madctl = 0xE8; break;
+        default:                   madctl = 0x48; rotation = ILI9488_ROTATION_0; break;
+    }
+    LCD_WriteCommand(0x36); LCD_WriteData(madctl);
+    lcd_rotation = rotation;
+}
+
+void LCD_Reset(void) {
+    RST_HIGH(); HAL_Delay(5);
+    RST_LOW();  HAL_Delay(20);
+    RST_HIGH(); HAL_Delay(20);
+}
+
+void LCD_Init(void){
+    SPI1_BitBang_Init();
+    LCD_Reset();
+    LCD_WriteCommand(0x01); HAL_Delay(10);
+
+    LCD_WriteCommand(0xE0);
+    uint8_t gammaP[] = {0x00,0x03,0x09,0x08,0x16,0x0A,0x3F,0x78,0x4C,0x09,0x0A,0x08,0x16,0x1A,0x0F};
+    for(uint8_t i=0;i<15;i++) LCD_WriteData(gammaP[i]);
+
+    LCD_WriteCommand(0xE1);
+    uint8_t gammaN[] = {0x00,0x16,0x19,0x03,0x0F,0x05,0x32,0x45,0x46,0x04,0x0E,0x0D,0x35,0x37,0x0F};
+    for(uint8_t i=0;i<15;i++) LCD_WriteData(gammaN[i]);
+
+    LCD_WriteCommand(0xC0); LCD_WriteData(0x17); LCD_WriteData(0x15);
+    LCD_WriteCommand(0xC1); LCD_WriteData(0x41);
+    LCD_WriteCommand(0xC5); LCD_WriteData(0x00); LCD_WriteData(0x12); LCD_WriteData(0x80);
+    LCD_SetRotation(ILI9488_ROTATION_0);
+    LCD_WriteCommand(0x3A); LCD_WriteData(0x66);
+    LCD_WriteCommand(0xB0); LCD_WriteData(0x00);
+    LCD_WriteCommand(0xB1); LCD_WriteData(0xA0);
+    LCD_WriteCommand(0xB4); LCD_WriteData(0x02);
+    LCD_WriteCommand(0xB6); LCD_WriteData(0x02); LCD_WriteData(0x02);
+    LCD_WriteCommand(0xE9); LCD_WriteData(0x00);
+    LCD_WriteCommand(0xF7); LCD_WriteData(0xA9); LCD_WriteData(0x51); LCD_WriteData(0x2C); LCD_WriteData(0x82);
+    LCD_WriteCommand(0x11); HAL_Delay(120);
+    LCD_WriteCommand(0x29); HAL_Delay(20);
+    LCD_FillColor(LCD_BLACK);
+}
+
+void LCD_SPI_Init(void) { SPI1_BitBang_Init(); }
+uint16_t LCD_ReadID(void) { return 0x9488; }
+uint16_t LCD_ReadID_FullDuplex(void) { return 0x9488; }
+
+void LCD_SetWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
+    LCD_WriteCommand(0x2A);
+    LCD_WriteData(x0 >> 8); LCD_WriteData(x0 & 0xFF);
+    LCD_WriteData(x1 >> 8); LCD_WriteData(x1 & 0xFF);
+    LCD_WriteCommand(0x2B);
+    LCD_WriteData(y0 >> 8); LCD_WriteData(y0 & 0xFF);
+    LCD_WriteData(y1 >> 8); LCD_WriteData(y1 & 0xFF);
+}
+
+void LCD_DrawPixel(uint16_t x, uint16_t y, uint16_t color) {
+    uint16_t w = LCD_GetWidth(), h = LCD_GetHeight();
+    if (x >= w || y >= h) return;
+    LCD_SetWindow(x, y, x, y);
+    LCD_WriteCommand(0x2C);
+    uint8_t rgb[3]; LCD_Color565To666(color, rgb);
+    DC_HIGH(); CS_LOW(); BB_WriteBuf(rgb, 3); CS_HIGH();
+}
+
+/* ── 快速全屏填充 ── */
+void LCD_FillColor(uint16_t color) {
+    uint16_t w = LCD_GetWidth(), h = LCD_GetHeight();
+    uint32_t total = (uint32_t)w * h;
+    LCD_SetWindow(0, 0, w-1, h-1);
+    LCD_WriteCommand(0x2C);
+    uint8_t rgb[3]; LCD_Color565To666(color, rgb);
+    DC_HIGH(); CS_LOW();
+
+    #define FCHUNK 2048
+    static uint8_t chunk[FCHUNK*3];
+    for (uint32_t i=0; i<FCHUNK*3; i+=3) { chunk[i]=rgb[0]; chunk[i+1]=rgb[1]; chunk[i+2]=rgb[2]; }
+
+    uint32_t remain = total;
+    while (remain > 0) {
+        uint32_t pix = (remain > FCHUNK) ? FCHUNK : remain;
+        for (uint32_t i=0; i<pix*3; i++) BB_WriteByte(chunk[i]);
+        remain -= pix;
+    }
+    CS_HIGH();
+}
+
+/* ── 区域填充 ── */
+void LCD_FillRect(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2, uint16_t color) {
+    if (x1>x2){uint16_t t=x1;x1=x2;x2=t;} if (y1>y2){uint16_t t=y1;y1=y2;y2=t;}
+    uint16_t w=LCD_GetWidth(),h=LCD_GetHeight();
+    if (x1>=w||y1>=h) return; if (x2>=w) x2=w-1; if (y2>=h) y2=h-1;
+    uint32_t total = (uint32_t)(x2-x1+1)*(uint32_t)(y2-y1+1);
+    LCD_SetWindow(x1,y1,x2,y2); LCD_WriteCommand(0x2C);
+    uint8_t rgb[3]; LCD_Color565To666(color, rgb);
+    DC_HIGH(); CS_LOW();
+
+    #define RCHUNK 2048
+    static uint8_t rchunk[RCHUNK*3];
+    for (uint32_t i=0;i<RCHUNK*3;i+=3){rchunk[i]=rgb[0];rchunk[i+1]=rgb[1];rchunk[i+2]=rgb[2];}
+    uint32_t remain=total;
+    while(remain>0){uint32_t pix=(remain>RCHUNK)?RCHUNK:remain; for(uint32_t i=0;i<pix*3;i++)BB_WriteByte(rchunk[i]); remain-=pix;}
+    CS_HIGH();
+}
+
+void LCD_DrawImageRect(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2, const uint16_t *colors) {
+    if (!colors) return;
+    if (x1>x2){uint16_t t=x1;x1=x2;x2=t;} if (y1>y2){uint16_t t=y1;y1=y2;y2=t;}
+    uint16_t w=LCD_GetWidth(),h=LCD_GetHeight();
+    if (x1>=w||y1>=h) return; if (x2>=w) x2=w-1; if (y2>=h) y2=h-1;
+    LCD_SetWindow(x1,y1,x2,y2); LCD_WriteCommand(0x2C);
+    uint32_t remain=(uint32_t)(x2-x1+1)*(uint32_t)(y2-y1+1), offset=0;
+    #define ICHUNK 256
+    static uint8_t ibuf[ICHUNK*3];
+    DC_HIGH(); CS_LOW();
+    while(remain>0){uint32_t pix=(remain>ICHUNK)?ICHUNK:remain; for(uint32_t i=0;i<pix;i++){uint8_t*rgb=&ibuf[i*3];LCD_Color565To666(colors[offset+i],rgb);} for(uint32_t i=0;i<pix*3;i++)BB_WriteByte(ibuf[i]); offset+=pix; remain-=pix;}
+    CS_HIGH();
+}
+
+void LCD_InitDMA(void) { LCD_Init(); dma_state=ILI9488_DMA_IDLE; dma_callback=NULL; dma_complete_flag=0; LCD_FillColor(LCD_BLACK); }
+
+/* ── Font data: 6×8 pixel monospace ── */
+/* Each char = 6 columns × 8 rows = 6 bytes (columns left-to-right, MSB=top) */
+static const uint8_t font6x8[96][6] = {
+    {0x00,0x00,0x00,0x00,0x00,0x00}, /* space */
+    {0x00,0x00,0x5F,0x00,0x00,0x00}, /* ! */
+    {0x00,0x07,0x00,0x07,0x00,0x00}, /* " */
+    {0x14,0x7F,0x14,0x7F,0x14,0x00}, /* # */
+    {0x24,0x2A,0x7F,0x2A,0x12,0x00}, /* $ */
+    {0x23,0x13,0x08,0x64,0x62,0x00}, /* % */
+    {0x36,0x49,0x55,0x22,0x50,0x00}, /* & */
+    {0x00,0x05,0x03,0x00,0x00,0x00}, /* ' */
+    {0x00,0x1C,0x22,0x41,0x00,0x00}, /* ( */
+    {0x00,0x41,0x22,0x1C,0x00,0x00}, /* ) */
+    {0x08,0x2A,0x1C,0x2A,0x08,0x00}, /* * */
+    {0x08,0x08,0x3E,0x08,0x08,0x00}, /* + */
+    {0x00,0x50,0x30,0x00,0x00,0x00}, /* , */
+    {0x08,0x08,0x08,0x08,0x08,0x00}, /* - */
+    {0x00,0x60,0x60,0x00,0x00,0x00}, /* . */
+    {0x20,0x10,0x08,0x04,0x02,0x00}, /* / */
+    {0x3E,0x51,0x49,0x45,0x3E,0x00}, /* 0 */
+    {0x00,0x42,0x7F,0x40,0x00,0x00}, /* 1 */
+    {0x42,0x61,0x51,0x49,0x46,0x00}, /* 2 */
+    {0x21,0x41,0x45,0x4B,0x31,0x00}, /* 3 */
+    {0x18,0x14,0x12,0x7F,0x10,0x00}, /* 4 */
+    {0x27,0x45,0x45,0x45,0x39,0x00}, /* 5 */
+    {0x3C,0x4A,0x49,0x49,0x30,0x00}, /* 6 */
+    {0x01,0x71,0x09,0x05,0x03,0x00}, /* 7 */
+    {0x36,0x49,0x49,0x49,0x36,0x00}, /* 8 */
+    {0x06,0x49,0x49,0x29,0x1E,0x00}, /* 9 */
+    {0x00,0x36,0x36,0x00,0x00,0x00}, /* : */
+    {0x00,0x56,0x36,0x00,0x00,0x00}, /* ; */
+    {0x00,0x08,0x14,0x22,0x41,0x00}, /* < */
+    {0x14,0x14,0x14,0x14,0x14,0x00}, /* = */
+    {0x41,0x22,0x14,0x08,0x00,0x00}, /* > */
+    {0x02,0x01,0x51,0x09,0x06,0x00}, /* ? */
+    {0x32,0x49,0x79,0x41,0x3E,0x00}, /* @ */
+    {0x7E,0x11,0x11,0x11,0x7E,0x00}, /* A */
+    {0x7F,0x49,0x49,0x49,0x36,0x00}, /* B */
+    {0x3E,0x41,0x41,0x41,0x22,0x00}, /* C */
+    {0x7F,0x41,0x41,0x22,0x1C,0x00}, /* D */
+    {0x7F,0x49,0x49,0x49,0x41,0x00}, /* E */
+    {0x7F,0x09,0x09,0x01,0x01,0x00}, /* F */
+    {0x3E,0x41,0x41,0x51,0x32,0x00}, /* G */
+    {0x7F,0x08,0x08,0x08,0x7F,0x00}, /* H */
+    {0x00,0x41,0x7F,0x41,0x00,0x00}, /* I */
+    {0x20,0x40,0x41,0x3F,0x01,0x00}, /* J */
+    {0x7F,0x08,0x14,0x22,0x41,0x00}, /* K */
+    {0x7F,0x40,0x40,0x40,0x40,0x00}, /* L */
+    {0x7F,0x02,0x04,0x02,0x7F,0x00}, /* M */
+    {0x7F,0x04,0x08,0x10,0x7F,0x00}, /* N */
+    {0x3E,0x41,0x41,0x41,0x3E,0x00}, /* O */
+    {0x7F,0x09,0x09,0x09,0x06,0x00}, /* P */
+    {0x3E,0x41,0x51,0x21,0x5E,0x00}, /* Q */
+    {0x7F,0x09,0x19,0x29,0x46,0x00}, /* R */
+    {0x46,0x49,0x49,0x49,0x31,0x00}, /* S */
+    {0x01,0x01,0x7F,0x01,0x01,0x00}, /* T */
+    {0x3F,0x40,0x40,0x40,0x3F,0x00}, /* U */
+    {0x1F,0x20,0x40,0x20,0x1F,0x00}, /* V */
+    {0x7F,0x20,0x18,0x20,0x7F,0x00}, /* W */
+    {0x63,0x14,0x08,0x14,0x63,0x00}, /* X */
+    {0x03,0x04,0x78,0x04,0x03,0x00}, /* Y */
+    {0x61,0x51,0x49,0x45,0x43,0x00}, /* Z */
+    {0x00,0x00,0x7F,0x41,0x41,0x00}, /* [ */
+    {0x02,0x04,0x08,0x10,0x20,0x00}, /* \ */
+    {0x41,0x41,0x7F,0x00,0x00,0x00}, /* ] */
+    {0x04,0x02,0x01,0x02,0x04,0x00}, /* ^ */
+    {0x40,0x40,0x40,0x40,0x40,0x00}, /* _ */
+    {0x00,0x01,0x02,0x04,0x00,0x00}, /* ` */
+    {0x20,0x54,0x54,0x54,0x78,0x00}, /* a */
+    {0x7F,0x48,0x44,0x44,0x38,0x00}, /* b */
+    {0x38,0x44,0x44,0x44,0x20,0x00}, /* c */
+    {0x38,0x44,0x44,0x48,0x7F,0x00}, /* d */
+    {0x38,0x54,0x54,0x54,0x18,0x00}, /* e */
+    {0x08,0x7E,0x09,0x01,0x02,0x00}, /* f */
+    {0x08,0x14,0x54,0x54,0x3C,0x00}, /* g */
+    {0x7F,0x08,0x04,0x04,0x78,0x00}, /* h */
+    {0x00,0x44,0x7D,0x40,0x00,0x00}, /* i */
+    {0x20,0x40,0x44,0x3D,0x00,0x00}, /* j */
+    {0x00,0x7F,0x10,0x28,0x44,0x00}, /* k */
+    {0x00,0x41,0x7F,0x40,0x00,0x00}, /* l */
+    {0x7C,0x04,0x18,0x04,0x78,0x00}, /* m */
+    {0x7C,0x08,0x04,0x04,0x78,0x00}, /* n */
+    {0x38,0x44,0x44,0x44,0x38,0x00}, /* o */
+    {0x7C,0x14,0x14,0x14,0x08,0x00}, /* p */
+    {0x08,0x14,0x14,0x18,0x7C,0x00}, /* q */
+    {0x7C,0x08,0x04,0x04,0x08,0x00}, /* r */
+    {0x48,0x54,0x54,0x54,0x20,0x00}, /* s */
+    {0x04,0x3F,0x44,0x40,0x20,0x00}, /* t */
+    {0x3C,0x40,0x40,0x20,0x7C,0x00}, /* u */
+    {0x1C,0x20,0x40,0x20,0x1C,0x00}, /* v */
+    {0x3C,0x40,0x30,0x40,0x3C,0x00}, /* w */
+    {0x44,0x28,0x10,0x28,0x44,0x00}, /* x */
+    {0x0C,0x50,0x50,0x50,0x3C,0x00}, /* y */
+    {0x44,0x64,0x54,0x4C,0x44,0x00}, /* z */
+    {0x00,0x08,0x36,0x41,0x00,0x00}, /* { */
+    {0x00,0x00,0x7F,0x00,0x00,0x00}, /* | */
+    {0x00,0x41,0x36,0x08,0x00,0x00}, /* } */
+    {0x08,0x08,0x2A,0x1C,0x08,0x00}, /* ~ */
+};
+
+/* ── 6×8 字符绘制（使用 LCD_DrawPixel — 已可靠验证）── */
+/* ── 6×8 optimized: single window batch output ── */
+static void lcd_fill_rect_raw(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2, uint16_t color);
+
+void LCD_DrawChar(uint16_t x, uint16_t y, char c, uint16_t color, uint16_t bg)
+{
+    if (c < 32 || c > 126) c = ' ';
+    uint8_t idx = (uint8_t)(c - 32);
+    const uint8_t *ch = font6x8[idx];
+    for (uint8_t row = 0; row < 8; row++) {
+        for (uint8_t col = 0; col < 6; col++) {
+            uint8_t bit = (ch[col] >> (7 - row)) & 1;
+            LCD_DrawPixel(x + col, y + row, bit ? color : bg);
+        }
+    }
+}
+
+void LCD_DrawString(uint16_t x, uint16_t y, const char *str, uint16_t color, uint16_t bg)
+{
+    while (str && *str) {
+        LCD_DrawChar(x, y, *str, color, bg);
+        x += 7;
+        str++;
+    }
+}
