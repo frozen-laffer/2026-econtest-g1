@@ -10,7 +10,7 @@
 - **STM32G474 固件**（`firmware/`）：ADC 三路交替采样、AFE 档位控制、W5500 以太网 UDP 传输、Flash 参数存储、TFT/触摸界面
 - **树莓派上位机**（`host/`）：波形装载、扫频标定、频响补偿、谐波测量、触摸屏操作界面
 - **验收测试**（`test/`）：10 例赛题用例、160 点波形扫描、相位专项
-- **文档**（`docs/`）：完整方案、实施细节、约束决策、任务书、报告素材、DG4202 接入说明
+- **文档**（`docs/`）：四卷问答体——硬件 / 固件 / 软件 / 外设驱动，入口 [`docs/00_README.md`](docs/00_README.md)
 - **硬件**（`hardware/`）：490 kHz 四阶 Chebyshev 前端设计文件与 BOM
 
 ## 关键特性
@@ -60,7 +60,7 @@ CubeMX 工程文件是 `firmware/Three_New.ioc`。
 
 ## 验收结果
 
-10 例赛题用例（判据 Upp/Urms/各阶幅度均 ≤5 mV）**10/10 通过**，明细见 [`test/README.md`](test/README.md) 与 [`docs/06_DG4202接入说明.md`](docs/06_DG4202接入说明.md)。
+10 例赛题用例（判据 Upp/Urms/各阶幅度均 ≤5 mV）**10/10 通过**，明细见 [`test/README.md`](test/README.md) 与 [`docs/03_软件.md`](docs/03_软件.md) 的验收表。
 
 ## 目录
 
@@ -68,7 +68,7 @@ CubeMX 工程文件是 `firmware/Three_New.ioc`。
 firmware/    STM32G474 固件（自写驱动 + HAL + CMSIS + MDK 工程）
 host/        树莓派上位机（30 个模块）
 test/        验收测试脚本与结果
-docs/        方案文档（00 索引）
+docs/        四卷问答体文档（00 索引）
 hardware/    前端滤波器设计文件与 BOM
 ```
 
