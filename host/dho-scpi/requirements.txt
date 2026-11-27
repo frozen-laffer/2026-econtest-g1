@@ -1,0 +1,2 @@
+# 运行时只用标准库；numpy 可选（有则用 rfft，没有走纯 Python FFT）
+# numpy>=1.20   # optional

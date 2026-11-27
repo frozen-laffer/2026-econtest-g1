@@ -19,6 +19,7 @@
 | `lsa_cfg.py` | 全局配置（`config.json`，主要是 `in_scale`：标称幅度 / 低频平台 Upp） |
 | `cal_step.py` | **PC 侧**一键阶梯校准：驱动 AFG-2225 逐点采表，写 `eq.json`/`config.json` 并上传 |
 | `cap_one.py` | 树莓派侧单点采集（给 `cal_step.py` 当从机，也可以单独拿来读数） |
+| `dho-scpi/` | 示波器驱动：RIGOL DHO800/900 的 LAN SCPI 读波形/深存储/FFT 判据，纯标准库，用法见 `dho-scpi/README.md` |
 
 ---
 
